@@ -51,6 +51,7 @@ jobs:
           fi
           echo "ipk_version=${VER}-${REL}" >> "$GITHUB_OUTPUT"
           echo "apk_version=${VER}-r${REL}" >> "$GITHUB_OUTPUT"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "depends=${DEP}" >> "$GITHUB_OUTPUT"
           echo "version(ipk) = ${VER}-${REL}"
           echo "version(apk) = ${VER}-r${REL}"
@@ -199,8 +200,42 @@ jobs:
       - name: Checksums
         run: ( cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
 
-      - name: Upload artifacts
+      # 分开上传: ipk / apk / 校验和各自独立 artifact
+      # (GitHub 下载 artifact 时始终会套一层 zip, 想拿原始文件请用下面的 Release)
+      - name: Upload .ipk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: packages
-          path: dist/
+          name: luci-app-iptv-channels_ipk
+          path: dist/*.ipk
+          if-no-files-found: error
+
+      - name: Upload .apk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-iptv-channels_apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Upload checksums artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      # ---------------- 自动发 Release ----------------
+      # tag 为 v<PKG_VERSION> (如 v1.2.3): 不存在则创建并附全部产物;
+      # 已存在则覆盖上传同名文件 (--clobber)
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.meta.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在, 覆盖上传产物"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "$TAG" --generate-notes
+          fi
+          gh release view "$TAG"
