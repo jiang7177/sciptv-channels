@@ -1,0 +1,192 @@
+name: Build ipk & apk
+
+# 手动编译 luci-app-iptv-channels 双格式安装包 (仅 Actions 页面手动运行):
+#   - .ipk  — opkg 固件 (OpenWrt 24.10 及更早)
+#   - .apk  — apk 固件 (OpenWrt 25.x snapshot, apk-tools 3)
+#
+# 工作流完全自包含, 不依赖仓库里的 build_ipk.sh。
+# 兼容两种仓库布局 (自动检测):
+#   1) 仓库根目录下有 luci-app-iptv-channels/ 子目录 (源码文件夹在外层)
+#   2) 仓库根目录即源码文件夹本身 (把本文件放到 <源码>/.github/workflows/ 即可)
+
+# 仅手动触发: 在 GitHub 仓库 Actions 页面点 "Run workflow" 才会构建,
+# 无 push / PR / schedule 等任何自动触发。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate package directory
+        id: loc
+        run: |
+          if [ -d luci-app-iptv-channels ]; then
+            echo "pkg_dir=luci-app-iptv-channels" >> "$GITHUB_OUTPUT"
+          else
+            echo "pkg_dir=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read version & dependencies from Makefile
+        id: meta
+        run: |
+          cd "${{ steps.loc.outputs.pkg_dir }}"
+          VER=$(grep -m1 '^PKG_VERSION:' Makefile | cut -d: -f2 | tr -d '[:space:]')
+          REL=$(grep -m1 '^PKG_RELEASE:' Makefile | cut -d: -f2 | tr -d '[:space:]')
+          # +luci-base +python3-light ... -> "luci-base python3-light ..."
+          DEP=$(grep -m1 '^LUCI_DEPENDS:' Makefile | cut -d= -f2- | sed 's/+//g' | xargs)
+          echo "ipk_version=${VER}-${REL}" >> "$GITHUB_OUTPUT"
+          echo "apk_version=${VER}-r${REL}" >> "$GITHUB_OUTPUT"
+          echo "depends=${DEP}" >> "$GITHUB_OUTPUT"
+          echo "version(ipk) = ${VER}-${REL}"
+          echo "version(apk) = ${VER}-r${REL}"
+          echo "depends       = ${DEP}"
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools fakeroot >/dev/null
+
+      - name: Assemble package tree (pkgdata/)
+        env:
+          PKG_DIR: ${{ steps.loc.outputs.pkg_dir }}
+        run: |
+          set -e
+          rm -rf pkgdata dist
+          mkdir -p pkgdata dist
+          # root/ -> 系统文件; htdocs/ -> /www (LuCI JS 视图)
+          cp -a "$PKG_DIR/root/." pkgdata/
+          mkdir -p pkgdata/www
+          cp -a "$PKG_DIR/htdocs/." pkgdata/www/
+          # 权限归一化 (Linux CI 下可直接设置真实执行位)
+          find pkgdata -type d -exec chmod 0755 {} +
+          find pkgdata -type f -exec chmod 0644 {} +
+          chmod 0755 pkgdata/etc/init.d/iptv-channels \
+                     pkgdata/usr/libexec/rpcd/iptv-channels
+          # 排除 Python 编译缓存等无关文件
+          find pkgdata -type d -name __pycache__ -prune -exec rm -rf {} +
+          find pkgdata -name '*.pyc' -delete
+          echo "---- 包文件清单 ----"
+          find pkgdata -type f | sort
+
+      # ---------------- ipk (opkg, tar 格式) ----------------
+      - name: Build .ipk
+        env:
+          VERSION: ${{ steps.meta.outputs.ipk_version }}
+          DEPENDS: ${{ steps.meta.outputs.depends }}
+        run: |
+          set -e
+          NAME=luci-app-iptv-channels
+          rm -rf build && mkdir -p build/control build/data
+          cp -a pkgdata/. build/data/
+
+          DEP_CSV=$(echo "$DEPENDS" | sed 's/ /, /g')
+          {
+            echo "Package: $NAME"
+            echo "Version: $VERSION"
+            echo "Depends: $DEP_CSV"
+            echo "Section: luci"
+            echo "Category: luci"
+            echo "Architecture: all"
+            echo "Maintainer: user"
+            echo "Description: LuCI support for IPTV-channels (Sichuan Telecom IPTV multicast/EPG)"
+          } > build/control/control
+
+          echo "/etc/config/iptv-channels" > build/control/conffiles
+
+          cat > build/control/postinst <<'PKEOF'
+          #!/bin/sh
+          chmod 0755 "${IPKG_INSTROOT}/etc/init.d/iptv-channels" \
+          	"${IPKG_INSTROOT}/usr/libexec/rpcd/iptv-channels" 2>/dev/null || :
+          [ -n "${IPKG_INSTROOT}" ] || {
+          	rm -f /tmp/luci-indexcache.*
+          	rm -rf /tmp/luci-modulecache/
+          	/etc/init.d/rpcd reload 2>/dev/null
+          	exit 0
+          }
+          PKEOF
+
+          ( cd build/data    && tar --owner=0 --group=0 -czf ../data.tar.gz    . )
+          ( cd build/control && tar --owner=0 --group=0 -czf ../control.tar.gz . )
+          echo "2.0" > build/debian-binary
+          ( cd build && tar -czf "../dist/${NAME}_${VERSION}_all.ipk" \
+              debian-binary control.tar.gz data.tar.gz )
+          ls -l "dist/${NAME}_${VERSION}_all.ipk"
+
+      # ---------------- apk (apk-tools 3, OpenWrt 25.x 固件) ----------------
+      - name: Fetch static apk-tools 3 (with mkpkg)
+        run: |
+          set -e
+          mkdir -p "$HOME/.local/apk-tools/bin"
+          BASE=https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64
+          # 取最新版本号 (目录列表解析), 避免硬编码版本过期
+          F=$(curl -sSf "$BASE/" | grep -oE 'apk-tools-static-[0-9][^"< ]*\.apk' \
+                | sort -uV | tail -n 1)
+          echo "fetching $F"
+          curl -sSfL -o /tmp/apk-static.apk "$BASE/$F"
+          # apk 文件 = 前后两段 tar.gz 流 (control + data), bsdtar 可一并读取
+          bsdtar -xzf /tmp/apk-static.apk -C /tmp
+          install -m 0755 /tmp/sbin/apk "$HOME/.local/apk-tools/bin/apk"
+          "$HOME/.local/apk-tools/bin/apk" --version
+
+      - name: Build .apk
+        env:
+          VERSION: ${{ steps.meta.outputs.apk_version }}
+          DEPENDS: ${{ steps.meta.outputs.depends }}
+        run: |
+          set -e
+          NAME=luci-app-iptv-channels
+          APK="$HOME/.local/apk-tools/bin/apk"
+
+          # apk 固件约定: conffiles 放在包数据内的 lib/apk/packages/<name>.conffiles
+          # (ipk 已在上一步打包, 此处追加不影响)
+          mkdir -p pkgdata/lib/apk/packages
+          echo "/etc/config/iptv-channels" \
+            > pkgdata/lib/apk/packages/luci-app-iptv-channels.conffiles
+
+          # apk 脚本在设备上执行时不带 IPKG_INSTROOT
+          cat > apk-postinst <<'APKEOF'
+          #!/bin/sh
+          chmod 0755 /etc/init.d/iptv-channels \
+          	/usr/libexec/rpcd/iptv-channels 2>/dev/null || :
+          [ -e /etc/openwrt_release ] || exit 0
+          rm -f /tmp/luci-indexcache.* 2>/dev/null
+          rm -rf /tmp/luci-modulecache/ 2>/dev/null
+          /etc/init.d/rpcd reload 2>/dev/null
+          exit 0
+          APKEOF
+          chmod +x apk-postinst
+
+          # 与 OpenWrt buildroot 相同的 mkpkg 用法;
+          # fakeroot 让包内文件 uid/gid 归 0
+          fakeroot -- "$APK" mkpkg \
+            --info "name:$NAME" \
+            --info "version:$VERSION" \
+            --info "description:LuCI support for IPTV-channels (Sichuan Telecom IPTV multicast/EPG)" \
+            --info "arch:all" \
+            --info "license:MIT" \
+            --info "url:https://github.com/mytv-android/IPTV-channels" \
+            --info "depends:$DEPENDS" \
+            --script "post-install:$PWD/apk-postinst" \
+            --files "$PWD/pkgdata" \
+            --output "dist/${NAME}_${VERSION}_all.apk"
+
+          ls -l "dist/${NAME}_${VERSION}_all.apk"
+          # 抽查包元数据
+          "$APK" adbdump "dist/${NAME}_${VERSION}_all.apk" 2>/dev/null | head -40 || true
+
+      # ---------------- 产物 ----------------
+      - name: Checksums
+        run: ( cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
