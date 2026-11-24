@@ -1,0 +1,79 @@
+# LuCI app: iptv-channels
+# 四川电信 IPTV 组播地址 / EPG 获取配置
+# 移植自 https://github.com/mytv-android/IPTV-channels
+
+config main 'main'
+	# 运行模式: manual=手动填写参数 / auto=嗅探机顶盒流量自动获取
+	# auto 模式通过 tcpdump 在嗅探网口上被动捕获机顶盒的明文 HTTP 认证报文,
+	# 自动获取 UserID/机顶盒 IP/MAC/STBID/STBType/templateName/areaId/EDS 入口
+	# 并写回本配置; EDS 变更后重新嗅探即可自动跟随 (需安装 tcpdump)
+	option mode 'manual'
+
+	# 嗅探网口 (auto 模式): 留空时自动检测 (优先路由到 EDS 的网口 / IPTV VLAN 子口)
+	option sniff_interface ''
+
+	# 嗅探时长 (秒), 机顶盒开机/刷新时才会产生认证流量, 太短可能捕获不到
+	option sniff_timeout '30'
+
+	# 嗅探到 Authenticator 且未配置 key 时自动爆破 key
+	# (路由器 CPU 较慢, 全空间约需数小时, 建议保持关闭并手动填写 key)
+	option auto_bruteforce '0'
+
+	# EDS 入口自动探测: 探测到可用入口后保存的完整 URL (含 /EDS/jsp 或 /EPG/jsp 路径)
+	option authentication_url ''
+
+	# 历史可用 EDS/EPG 节点 (空格分隔), 入口失效时按序探测
+	option eds_history ''
+
+	# EDS 入口全部失效时是否自动扫描网段寻找新入口 (耗时数分钟, 默认关闭)
+	option eds_scan '0'
+
+	# 扫描网段与端口
+	option eds_scan_cidr '182.138.0.0/16'
+	option eds_scan_ports '8082,8001'
+
+	# EPG 网段路由 (空格分隔): 每次运行前自检, 缺失时自动经 IPTV 口网关补齐
+	# (DHCP 静默 renew 换地址池后 hotplug 钩子不会触发, 路由会丢失)
+	option epg_routes '182.136.0.0/13 182.144.0.0/14 118.122.0.0/16'
+
+	# 8 位 3DES 加密 key (从机顶盒抓包获取; 留空时若填写了 authenticator 会尝试自动破解)
+	option key ''
+
+	# 认证串首字段声明的 key (部分平台加密 key 与声明 key 不一致时填写)
+	option key_declared ''
+
+	# 机顶盒的 IP 地址 (IPTV 内网线路)
+	option ip ''
+
+	# 认证账号信息 (机顶盒抓包获取)
+	option user_id ''
+	option mac ''
+	option stbid ''
+	option stb_type ''
+	option stb_version ''
+	option authenticator ''
+
+	# EPG 认证服务器地址 (如 http://x.x.x.x:8082, 从机顶盒抓包获取)
+	option authentication_ip ''
+
+	# 上游接口: 绑定 EPG/认证请求的出口网口 (如 eth2.49),
+	# 留空则走系统路由表。电信 EPG 通常仅 IPTV 内网可达时需填写
+	option upstream_interface ''
+
+	# 机顶盒 UA
+	option user_agent 'Mozilla/5.0 (X11; Android x86_64; ChromiumBrowser) AppleWebKit/534.24 (KHTML, like Gecko) Safari/534.24 SkWebKit-SC-CTC'
+
+	# 模板与区域 (部分地区需要)
+	option template_name ''
+	option area_id ''
+
+	# rtp2httpd 服务器地址 (组播转 HTTP)
+	option rtp2httpd 'http://192.168.5.1:8888'
+
+	# 定时任务
+	option cron_enabled '0'
+	option cron_expr '0 5 * * *'
+
+	# EPG Git 同步 (可选)
+	option epg_git_repo ''
+	option epg_git_token ''

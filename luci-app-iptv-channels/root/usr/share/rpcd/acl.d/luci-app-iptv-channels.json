@@ -1,0 +1,17 @@
+{
+	"luci-app-iptv-channels": {
+		"description": "Grant access to IPTV channels grabber",
+		"read": {
+			"ubus": {
+				"iptv-channels": ["status", "log", "channels", "interfaces", "discover", "download"]
+			},
+			"uci": ["iptv-channels"]
+		},
+		"write": {
+			"ubus": {
+				"iptv-channels": ["run", "cron", "discover"]
+			},
+			"uci": ["iptv-channels"]
+		}
+	}
+}

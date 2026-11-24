@@ -1,0 +1,60 @@
+#!/bin/sh /etc/rc.common
+# iptv-channels 服务: 不驻留进程, 主要负责目录准备与 crontab 定时任务管理
+# 用法:
+#   /etc/init.d/iptv-channels start   # 准备目录并应用定时任务
+#   /etc/init.d/iptv-channels cron    # 仅重新应用定时任务
+
+START=99
+USE_PROCD=0
+
+SCRIPT="/usr/share/iptv-channels/iptv_channels.py"
+CRONTAB="/etc/crontabs/root"
+
+prepare_dirs() {
+	# 日志目录在 /tmp (内存盘, 不写 flash), 输出目录在 /etc (需持久化)
+	mkdir -p /tmp/iptv-channels/log /etc/iptv-channels/output
+}
+
+setup_cron() {
+	local enabled expr
+	enabled="$(uci -q get iptv-channels.main.cron_enabled)"
+	expr="$(uci -q get iptv-channels.main.cron_expr)"
+
+	touch "$CRONTAB"
+	# 移除旧条目
+	sed -i "\|$SCRIPT|d" "$CRONTAB"
+
+	if [ "$enabled" = "1" ] && [ -n "$expr" ]; then
+		echo "$expr python3 $SCRIPT" >> "$CRONTAB"
+		logger -t iptv-channels "定时任务已更新: $expr python3 $SCRIPT"
+	else
+		logger -t iptv-channels "定时任务已禁用"
+	fi
+
+	if /etc/init.d/cron running; then
+		/etc/init.d/cron restart
+	fi
+}
+
+start() {
+	prepare_dirs
+	setup_cron
+}
+
+restart() {
+	start
+}
+
+stop() {
+	# 脚本为一次性任务, 无需停止常驻进程
+	return 0
+}
+
+boot() {
+	start
+}
+
+cron() {
+	prepare_dirs
+	setup_cron
+}

@@ -1,0 +1,32 @@
+{
+	"admin/services/iptv-channels": {
+		"title": "IPTV 频道获取",
+		"order": 65,
+		"icon": "iptv-channels.svg",
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": ["luci-app-iptv-channels"],
+			"uci": { "iptv-channels": true }
+		}
+	},
+
+	"admin/services/iptv-channels/settings": {
+		"title": "设置",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "iptv-channels/settings"
+		}
+	},
+
+	"admin/services/iptv-channels/channels": {
+		"title": "频道列表",
+		"order": 2,
+		"action": {
+			"type": "view",
+			"path": "iptv-channels/channels"
+		}
+	}
+}

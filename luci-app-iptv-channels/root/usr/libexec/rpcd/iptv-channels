@@ -1,0 +1,235 @@
+#!/bin/sh
+# rpcd 后端: 为 LuCI 提供 iptv-channels 的 ubus 接口
+# 提供: run(立即更新) / status(运行状态) / log(日志) / channels(频道列表)
+#       / cron(定时应用) / interfaces(网口列表) / discover(自动发现嗅探)
+#       / download(输出文件分块下载, 不依赖 /www 可写)
+# 兼容两种 rpcd 调用协议:
+#   旧版 rpcd (2023 及以前): $1 = 方法名, 参数经 stdin JSON
+#   新版 rpcd (2024-09+):    $1=call, $2=方法名, 参数经 stdin JSON
+
+SCRIPT="/usr/share/iptv-channels/iptv_channels.py"
+PIDF="/tmp/iptv-channels.pid"
+# 日志在 /tmp (tmpfs 内存盘), 不写 flash
+LOGF="/tmp/iptv-channels/log/iptv.log"
+OUTD="/etc/iptv-channels/output"
+
+METHOD="$1"
+if [ "$1" = "call" ] && [ -n "$2" ]; then
+	METHOD="$2"
+fi
+
+# 简易 JSON 字符串转义
+json_esc() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+is_running() {
+	[ -f "$PIDF" ] || return 1
+	kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
+}
+
+prepare_dirs() {
+	mkdir -p /tmp/iptv-channels/log /etc/iptv-channels/output
+}
+
+case "$METHOD" in
+	list)
+		echo '{ "run": {}, "status": {}, "log": { "lines": 200 }, "channels": {}, "cron": { "action": "apply" }, "interfaces": {}, "discover": { "timeout": 30 }, "download": { "file": "sctv.m3u", "offset": 0, "length": 65536 } }'
+		;;
+	interfaces)
+		# 列出网络接口 (排除 lo), 供设置页"上游接口"下拉选择
+		printf '{ "interfaces": ['
+		first=1
+		for d in /sys/class/net/*; do
+			i="${d##*/}"
+			[ "$i" = "lo" ] && continue
+			# 排除 bonding_masters 等伪文件: 真实网口必有 operstate
+			[ -f "$d/operstate" ] || continue
+			state="$(cat "$d/operstate" 2>/dev/null || echo unknown)"
+			ipaddr="$(ip -4 addr show dev "$i" 2>/dev/null | awk '/inet /{print $2; exit}')"
+			[ "$first" -eq 1 ] || printf ','
+			first=0
+			printf '{"name":"%s","state":"%s","ip":"%s"}' \
+				"$(json_esc "$i")" "$(json_esc "$state")" "$(json_esc "$ipaddr")"
+		done
+		echo '] }'
+		;;
+	run)
+		if is_running; then
+			echo '{ "success": false, "msg": "更新任务正在运行中，请稍候" }'
+		else
+			prepare_dirs
+			( python3 "$SCRIPT" >/tmp/iptv-channels.out 2>&1 & echo $! > "$PIDF" )
+			echo '{ "success": true, "msg": "更新任务已启动" }'
+		fi
+		;;
+	status)
+		if is_running; then
+			running="true"
+		else
+			running="false"
+		fi
+		mode="$(uci -q get iptv-channels.main.mode 2>/dev/null || echo manual)"
+		printf '{ "running": %s, "mode": "%s", "output": { ' "$running" "$(json_esc "$mode")"
+		first=1
+		for f in sctv.txt sctv.m3u epg.xml; do
+			[ "$first" -eq 1 ] || printf ', '
+			first=0
+			mtime=$(stat -c %Y "$OUTD/$f" 2>/dev/null || echo 0)
+			printf '"%s": %s' "$f" "${mtime:-0}"
+		done
+		printf ' } }\n'
+		;;
+	log)
+		lines=200
+		input="$(cat)"
+		if [ -n "$input" ]; then
+			. /usr/share/libubox/jshn.sh
+			json_load "$input"
+			json_get_var _lines lines 2>/dev/null && lines="$_lines"
+			unset J_V
+		fi
+		if [ ! -f "$LOGF" ]; then
+			echo '{ "log": "" }'
+		else
+			log_esc="$(tail -n "$lines" "$LOGF" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{printf "%s\\n", $0}')"
+			echo "{ \"log\": \"$log_esc\" }"
+		fi
+		;;
+	channels)
+		printf '{ "channels": ['
+		first=1
+		if [ -f "$OUTD/sctv.txt" ]; then
+			while IFS= read -r line; do
+				case "$line" in
+					*#genre#*) continue ;;
+					"") continue ;;
+				esac
+				name="${line%%,*}"
+				rest="${line#*,}"
+				url="${rest%%\#*}"
+				catchup=""
+				if [ "$rest" != "$url" ]; then
+					catchup="${rest#*\#}"
+				fi
+				[ "$first" -eq 1 ] || printf ','
+				first=0
+				printf '{"name":"%s","url":"%s","catchup":"%s"}' \
+					"$(json_esc "$name")" "$(json_esc "$url")" "$(json_esc "$catchup")"
+			done < "$OUTD/sctv.txt"
+		fi
+		echo '] }'
+		;;
+	download)
+		# 输出文件分块下载 (供 LuCI 频道页"下载"按钮使用):
+		# 仅允许白名单文件, offset 需为 length 整数倍, 返回 base64 分块。
+		# 避免 /www 只读/权限受限的固件上无法发布到 Web 目录的问题。
+		input="$(cat)"
+		fname=""
+		doff=0
+		dlen=65536
+		if [ -n "$input" ]; then
+			. /usr/share/libubox/jshn.sh
+			json_load "$input"
+			json_get_var fname file 2>/dev/null
+			json_get_var _o offset 2>/dev/null && doff="$_o"
+			json_get_var _l length 2>/dev/null && dlen="$_l"
+			unset J_V
+		fi
+		case "$fname" in
+			sctv.txt|sctv.m3u|epg.xml) f="$OUTD/$fname" ;;
+			*)
+				echo '{ "success": false, "msg": "不支持的文件名" }'
+				exit 0
+				;;
+		esac
+		[ "$dlen" -ge 1024 ] 2>/dev/null || dlen=1024
+		[ "$dlen" -le 131072 ] 2>/dev/null || dlen=131072
+		[ "$doff" -ge 0 ] 2>/dev/null || doff=0
+		if [ ! -f "$f" ]; then
+			printf '{ "success": false, "msg": "文件不存在: %s, 请先在设置页执行更新" }\n' \
+				"$(json_esc "$fname")"
+			exit 0
+		fi
+		size=$(stat -c %s "$f" 2>/dev/null || echo 0)
+		mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+		if [ "$doff" -ge "$size" ]; then
+			printf '{ "success": true, "file": "%s", "size": %s, "mtime": %s, "offset": %s, "eof": true, "content": "" }\n' \
+				"$(json_esc "$fname")" "$size" "$mtime" "$doff"
+			exit 0
+		fi
+		# offset 对齐到块边界后用 dd 读取一块, base64 传输 (无需 JSON 转义)
+		block=$((doff / dlen))
+		content="$(dd if="$f" bs="$dlen" skip="$block" count=1 2>/dev/null | base64 | tr -d '\n')"
+		raw=$((dlen))
+		if [ $((doff + dlen)) -gt "$size" ]; then
+			raw=$((size - doff))
+		fi
+		printf '{ "success": true, "file": "%s", "size": %s, "mtime": %s, "offset": %s, "eof": %s, "content": "%s" }\n' \
+			"$(json_esc "$fname")" "$size" "$mtime" "$doff" \
+			$([ $((doff + raw)) -ge "$size" ] && echo true || echo false) "$content"
+		;;
+	cron)
+		input="$(cat)"
+		action=""
+		if [ -n "$input" ]; then
+			. /usr/share/libubox/jshn.sh
+			json_load "$input"
+			json_get_var action action 2>/dev/null
+			unset J_V
+		fi
+		if [ "$action" = "apply" ]; then
+			/etc/init.d/iptv-channels cron >/dev/null 2>&1
+			echo '{ "success": true }'
+		else
+			echo '{ "success": false, "msg": "不支持的操作" }'
+		fi
+		;;
+	discover)
+		# 自动发现: action=start 后台启动嗅探 (--discover-only),
+		# 之后轮询 (action=poll 或无参数) 获取结果 JSON
+		input="$(cat)"
+		stimeout=30
+		action="poll"
+		if [ -n "$input" ]; then
+			. /usr/share/libubox/jshn.sh
+			json_load "$input"
+			json_get_var action action 2>/dev/null
+			json_get_var _t timeout 2>/dev/null && stimeout="$_t"
+			unset J_V
+		fi
+		[ "${stimeout:-0}" -lt 5 ] && stimeout=5
+		[ "${stimeout:-0}" -gt 300 ] && stimeout=300
+		DPIDF="/tmp/iptv-discover.pid"
+		DJSON="/tmp/iptv-discover.json"
+		DERR="/tmp/iptv-discover.err"
+		if [ -f "$DPIDF" ] && kill -0 "$(cat "$DPIDF" 2>/dev/null)" 2>/dev/null; then
+			drunning="true"
+		else
+			drunning="false"
+		fi
+		if [ "$action" = "start" ] && [ "$drunning" = "false" ]; then
+			rm -f "$DJSON" "$DERR"
+			prepare_dirs
+			( python3 "$SCRIPT" --discover-only --timeout "$stimeout" \
+				>"$DJSON" 2>"$DERR" & echo $! > "$DPIDF" )
+			drunning="true"
+		fi
+		res="null"
+		if [ "$drunning" = "false" ] && [ -f "$DJSON" ]; then
+			res="$(head -n 1 "$DJSON" 2>/dev/null)"
+			[ -n "$res" ] || res="null"
+		fi
+		derr=""
+		if [ "$drunning" = "false" ] && [ -f "$DERR" ]; then
+			derr="$(tail -n 5 "$DERR" 2>/dev/null | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{printf "%s\\n", $0}')"
+		fi
+		printf '{ "running": %s, "result": %s, "stderr": "%s" }\n' \
+			"$drunning" "$res" "$(json_esc "$derr")"
+		;;
+	*)
+		echo '{ "success": false, "msg": "未知方法" }'
+		;;
+esac
+
+exit 0
