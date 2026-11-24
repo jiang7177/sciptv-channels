@@ -130,9 +130,15 @@ jobs:
                 | sort -uV | tail -n 1)
           echo "fetching $F"
           curl -sSfL -o /tmp/apk-static.apk "$BASE/$F"
-          # apk 文件 = 前后两段 tar.gz 流 (control + data), bsdtar 可一并读取
+          # apk 文件 = 前后两段 tar.gz 流 (control + data), bsdtar 可一并读取;
+          # 静态二进制位于 sbin/apk.static
           bsdtar -xzf /tmp/apk-static.apk -C /tmp
-          install -m 0755 /tmp/sbin/apk "$HOME/.local/apk-tools/bin/apk"
+          APKBIN=$(find /tmp/sbin /tmp -maxdepth 2 \( -name 'apk.static' -o -name 'apk' \) -type f 2>/dev/null | head -n1)
+          if [ -z "$APKBIN" ]; then
+            echo "未找到 apk 静态二进制, /tmp 内容:"; find /tmp -maxdepth 2 -type f | head -30; exit 1
+          fi
+          echo "found: $APKBIN"
+          install -m 0755 "$APKBIN" "$HOME/.local/apk-tools/bin/apk"
           "$HOME/.local/apk-tools/bin/apk" --version
 
       - name: Build .apk
