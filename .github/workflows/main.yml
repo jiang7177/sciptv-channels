@@ -120,6 +120,9 @@ jobs:
           	exit 0
           }
           PKEOF
+          # opkg 会将 postinst 复制到 /usr/lib/opkg/info/ 后直接执行, 必须带执行位,
+          # 否则报 "pkg_run_script ... Permission denied (status 126)"
+          chmod 0755 build/control/postinst
 
           ( cd build/data    && tar --owner=0 --group=0 -czf ../data.tar.gz    . )
           ( cd build/control && tar --owner=0 --group=0 -czf ../control.tar.gz . )
