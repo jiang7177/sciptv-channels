@@ -37,10 +37,18 @@ jobs:
         id: meta
         run: |
           cd "${{ steps.loc.outputs.pkg_dir }}"
-          VER=$(grep -m1 '^PKG_VERSION:' Makefile | cut -d: -f2 | tr -d '[:space:]')
-          REL=$(grep -m1 '^PKG_RELEASE:' Makefile | cut -d: -f2 | tr -d '[:space:]')
+          # Makefile 用 ":=" 赋值, 按 ":=" 分列取值 (cut -d: 会把 '=' 带进值里)
+          VER=$(awk -F':=' '/^PKG_VERSION:/{print $2; exit}' Makefile | tr -d '[:space:]')
+          REL=$(awk -F':=' '/^PKG_RELEASE:/{print $2; exit}' Makefile | tr -d '[:space:]')
           # +luci-base +python3-light ... -> "luci-base python3-light ..."
           DEP=$(grep -m1 '^LUCI_DEPENDS:' Makefile | cut -d= -f2- | sed 's/+//g' | xargs)
+          # fail-fast: 版本必须干净, 否则 ipk 文件名/apk mkpkg 都会出问题
+          if ! echo "$VER" | grep -qE '^[0-9][0-9A-Za-z._]*$'; then
+            echo "PKG_VERSION 解析异常: [$VER]"; exit 1
+          fi
+          if ! echo "$REL" | grep -qE '^[0-9]+$'; then
+            echo "PKG_RELEASE 解析异常: [$REL]"; exit 1
+          fi
           echo "ipk_version=${VER}-${REL}" >> "$GITHUB_OUTPUT"
           echo "apk_version=${VER}-r${REL}" >> "$GITHUB_OUTPUT"
           echo "depends=${DEP}" >> "$GITHUB_OUTPUT"
