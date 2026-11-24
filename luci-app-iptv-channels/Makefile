@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-iptv-channels
 PKG_VERSION:=1.2.3
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 LUCI_TITLE:=LuCI support for IPTV-channels (四川电信 IPTV 组播/EPG 获取)
 LUCI_DESCRIPTION:=移植自 mytv-android/IPTV-channels。通过 IPTV 线路自动获取电信 IPTV 组播地址、回放地址及官方 EPG 节目单，生成 DIYP 格式 sctv.txt / sctv.m3u 与 XMLTV 格式 epg.xml。
