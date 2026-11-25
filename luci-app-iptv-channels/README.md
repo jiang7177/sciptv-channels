@@ -56,7 +56,9 @@ make package/luci-app-iptv-channels/compile V=s
 
 仓库内置工作流（`.github/workflows/build.yml`），**仅手动触发**（无 push / PR /
 定时等任何自动构建）：在 GitHub 仓库的 Actions 页面选择该工作流，点
-"Run workflow" 即产出双格式安装包（Artifacts 中的 `packages`）：
+"Run workflow" 即产出双格式安装包，并**自动创建/更新 GitHub Release**
+（tag 为 `v<PKG_VERSION>`，如 `v1.2.3`；Release 已存在则覆盖上传产物）。
+Release 页可直接下载原始文件，不必解 zip：
 
 - **`.ipk`** — opkg 固件（OpenWrt 24.10 及更早），`opkg install xxx.ipk`
 - **`.apk`** — apk 固件（OpenWrt 25.x / snapshot，apk-tools 3），安装：
@@ -64,6 +66,9 @@ make package/luci-app-iptv-channels/compile V=s
   apk add --allow-untrusted ./luci-app-iptv-channels_x.y.z-rN_all.apk
   ```
   （apk 未签名，需 `--allow-untrusted`；或自行用 `apk 生成密钥` 签名）
+
+Artifacts 分开上传：`luci-app-iptv-channels_ipk` / `luci-app-iptv-channels_apk` /
+`checksums`（GitHub 下载 artifact 时会套 zip，原始文件请在 Release 页下载）。
 
 工作流自包含、不依赖本地脚本，且自动识别两种仓库布局
 （源码在子目录 / 源码即仓库根）。
@@ -114,6 +119,19 @@ make package/luci-app-iptv-channels/compile V=s
 "RTP2HTTPD 服务器地址"改成实际地址。
 
 ## 更新日志
+
+### 1.2.4 (2026-11-25)
+
+- **EPG 网段路由改为策略路由（独立路由表 + 源地址规则）**：v1.2.2 起的网段路由
+  直接写入 main 表，会把局域网设备访问 `182.136.0.0/13` 等电信公网网段的流量
+  也带进 IPTV 线路（表现为个别电信系网站打不开）。1.2.4 起写入独立路由表
+  （默认 `table 100`，`epg_route_table` 可调），配合 `ip rule` 仅对**源 IP 为
+  IPTV 口地址**（即路由器自身发起的认证/抓取请求）生效，**局域网零影响**。
+- 首次运行自动迁移：自动清理旧版写入 main 表的网段路由、清理源地址变化残留的
+  旧规则；未配置「上游接口」时保持旧 main 表行为（自动模式探测到出口网口并写回
+  `upstream_interface` 后，下次运行自动切换为策略路由）。
+- hotplug 钩子改为调用 `iptv_channels.py --fix-routes`（轻量路由自检入口），
+  与主流程同一套逻辑，不再独立写路由。
 
 ### 1.2.3 (2026-11-24)
 

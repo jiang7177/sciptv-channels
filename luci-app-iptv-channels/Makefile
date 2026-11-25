@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-iptv-channels
-PKG_VERSION:=1.2.3
+PKG_VERSION:=1.2.4
 PKG_RELEASE:=2
 
 LUCI_TITLE:=LuCI support for IPTV-channels (四川电信 IPTV 组播/EPG 获取)
