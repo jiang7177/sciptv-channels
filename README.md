@@ -10,6 +10,9 @@
 - 生成 DIYP 格式 `sctv.txt`、`sctv.m3u` 及 XMLTV 格式 `epg.xml`
 - 输出文件在 LuCI **频道列表页直接下载**（rpcd 分块读取 `/etc/iptv-channels/output`，
   不依赖 `/www` 目录可写，不受固件权限限制）
+- **免登录文件服务**（1.2.5+）：内置常驻 HTTP 服务（默认端口 `5141`），播放器
+  直接订阅 `http://路由器IP:5141/sctv.m3u` 或 `/sctv.txt`，EPG 填 `/epg.xml`；
+  仅提供输出目录白名单文件（防路径穿越），支持来源网段白名单与自定义端口/监听地址
 - LuCI 设置页：填配置、一键更新、实时查看运行日志
 - LuCI 频道页：查看解析后的频道列表
 - crontab 定时自动更新（如每天凌晨 5 点）
@@ -119,6 +122,19 @@ Artifacts 分开上传：`luci-app-iptv-channels_ipk` / `luci-app-iptv-channels_
 "RTP2HTTPD 服务器地址"改成实际地址。
 
 ## 更新日志
+
+### 1.2.5 (2026-11-25)
+
+- **新增免登录文件服务**：procd 常驻 HTTP 服务（默认 `0.0.0.0:5141`），播放器
+  无需登录 LuCI 即可获取输出文件——订阅地址 `http://路由器IP:5141/sctv.m3u`
+  （或 `/sctv.txt`），EPG `http://路由器IP:5141/epg.xml`，`/` 返回文件状态页。
+  安全措施：仅输出目录白名单文件、路径规范化校验（杜绝 `../` 穿越与子目录访问）、
+  可选来源网段白名单 `server_allow_cidr`（仅信任 TCP 对端地址，不解析
+  X-Forwarded-For）、自定义端口/监听地址。OpenWrt 默认防火墙阻断 WAN 入站，
+  默认配置不会暴露到公网。
+- init.d 改为 procd 托管常驻服务（原非驻留脚本）；安装/升级 postinst 自动
+  enable 并重启服务；LuCI「应用设置」按钮同时应用定时任务与文件服务配置；
+  服务日志随 procd（`logread | grep iptv-channels`）。
 
 ### 1.2.4 (2026-11-25)
 
