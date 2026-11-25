@@ -765,6 +765,11 @@ def scan_eds_hosts(cidr: str = "182.138.0.0/16",
                 % (cidr, len(targets), ",".join(map(str, ports))))
     open_list: List[str] = []
     total = len(targets)
+    # v1.2.4: 策略路由下 EPG 网段只对 IPTV 源地址生效, 扫描 socket 必须绑定出口 IP
+    src_ip = get_iface_ip(upstream_interface) if upstream_interface else None
+    if upstream_interface and not src_ip:
+        logger.warning("EDS 扫描: 网口 %s 无 IPv4 地址, 扫描流量将走默认路由"
+                       % upstream_interface)
     for i in range(0, total, batch):
         chunk = targets[i:i + batch]
         pending: Dict[socket.socket, Tuple[str, int]] = {}
@@ -772,6 +777,8 @@ def scan_eds_hosts(cidr: str = "182.138.0.0/16",
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setblocking(False)
             try:
+                if src_ip:
+                    s.bind((src_ip, 0))
                 rc = s.connect_ex((ip, p))
             except Exception:
                 s.close()
@@ -854,9 +861,120 @@ def _route_dev(net: str) -> str:
     return ""
 
 
+def _policy_route_table() -> str:
+    """EPG 网段独立路由表编号 (UCI epg_route_table 可覆盖)"""
+    return uci_get("epg_route_table", "100")
+
+
+def _iface_connected_subnet(iface: str) -> Optional[str]:
+    """取接口的直连子网 (如 10.252.96.0/19), 独立路由表解析网关 nexthop 需要"""
+    try:
+        r = subprocess.run(["ip", "route", "show", "dev", iface],
+                           capture_output=True, timeout=5)
+        for line in r.stdout.decode("utf-8", "replace").splitlines():
+            tok = line.split()
+            if not tok or tok[0] == "default":
+                continue
+            # 优先带 src 的 kernel 直连路由; 忽略旧版写入的 182.x 网段路由
+            if "/" in tok[0] and ("src" in tok) and tok[0].startswith("10."):
+                return tok[0]
+        # 兜底: 任何带前缀且非 EPG 网段的直连路由
+        for line in r.stdout.decode("utf-8", "replace").splitlines():
+            tok = line.split()
+            if tok and tok[0] != "default" and "/" in tok[0] \
+                    and tok[0].startswith("10."):
+                return tok[0]
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_policy_routes(nets: List[str], iface: str, gw: str,
+                          src: str) -> int:
+    """
+    策略路由模式 (v1.2.4 起默认):
+    - EPG 网段路由写入独立路由表 (默认 table 100), 不再进 main 表
+    - ip rule 限定: 仅源 IP 为 IPTV 口地址的流量查该表
+    - 局域网设备访问这些公网网段仍走 WAN, 零影响
+    """
+    table = _policy_route_table()
+    prio = uci_get("epg_rule_prio", "100")
+    fixed = 0
+
+    # 1) 独立表: 直连子网 (nexthop 解析需要) + EPG 网段路由 (幂等 replace)
+    subnet = _iface_connected_subnet(iface)
+    cmds = []
+    if subnet:
+        cmds.append(["ip", "route", "replace", subnet, "dev", iface,
+                     "src", src, "table", table])
+    for net in nets:
+        cmds.append(["ip", "route", "replace", net, "via", gw, "dev", iface,
+                     "table", table])
+    for args in cmds:
+        r = subprocess.run(args, capture_output=True, timeout=5)
+        if r.returncode != 0:
+            logger.warning("路由自检: table %s 写入失败 (%s): %s"
+                           % (table, " ".join(args[3:5]),
+                              r.stderr.decode("utf-8", "replace").strip()))
+
+    # 2) 迁移: 移除旧版 (v1.2.x) 写入 main 表的 EPG 网段路由
+    for net in nets:
+        if _route_dev(net) == iface:
+            subprocess.run(["ip", "route", "del", net],
+                           capture_output=True, timeout=5)
+            logger.info("路由自检: 已迁移 main 表路由 %s -> table %s"
+                        % (net, table))
+            fixed += 1
+
+    # 3) ip rule: 仅 IPTV 口源地址查独立表; 清理源地址已变化的历史规则
+    want_rx = re.compile(r"from\s+%s\s+.*lookup\s+%s(?:\s|$)"
+                         % (re.escape(src), re.escape(table)))
+    tbl_rx = re.compile(r"lookup\s+%s(?:\s|$)" % re.escape(table))
+    try:
+        r = subprocess.run(["ip", "rule", "list"], capture_output=True, timeout=5)
+        lines = r.stdout.decode("utf-8", "replace").splitlines()
+        for line in lines:
+            if not tbl_rx.search(line) or "from all" in line \
+                    or want_rx.search(line):
+                continue
+            m = re.match(r"\s*(\d+):", line)
+            if m:
+                subprocess.run(["ip", "rule", "del", "prio", m.group(1)],
+                               capture_output=True, timeout=5)
+                logger.info("路由自检: 清理旧源地址规则: %s" % line.strip())
+                fixed += 1
+        if not any(want_rx.search(l) for l in lines):
+            r2 = subprocess.run(["ip", "rule", "add", "from", src,
+                                 "lookup", table, "prio", prio],
+                                capture_output=True, timeout=5)
+            if r2.returncode != 0:
+                r2 = subprocess.run(["ip", "rule", "add", "from", src,
+                                     "lookup", table],
+                                    capture_output=True, timeout=5)
+            if r2.returncode == 0:
+                logger.info("路由自检: ip rule from %s lookup %s "
+                            "(仅路由器 IPTV 源流量生效, 局域网不受影响)"
+                            % (src, table))
+                fixed += 1
+            else:
+                logger.warning("路由自检: 添加 ip rule 失败: %s"
+                               % r2.stderr.decode("utf-8", "replace").strip())
+    except Exception as e:
+        logger.warning("路由自检异常: %s" % e)
+    return fixed
+
+
 def ensure_iptv_routes() -> None:
     """
     自检 EPG 网段路由是否指向 IPTV 口网关, 缺失/错误时自动补齐。
+
+    v1.2.4 起分两种模式:
+    - 配置了 upstream_interface: 策略路由 (独立表 + 源地址规则),
+      EPG 网段路由只对路由器自身的 IPTV 源流量生效, 局域网访问
+      这些公网网段不受影响; 同时迁移清理旧版写入 main 表的路由。
+    - 未配置 upstream_interface: 保持 main 表网段路由 (旧版行为),
+      因为未绑定出口的请求依赖 main 表路由; auto 模式探测到出口
+      网口后会自动写入 upstream_interface, 下次运行即切到策略路由。
 
     背景: IPTV 线路为 DHCP 接入且地址池会变化 (如 10.58.96.0/20 与
     10.252.96.0/19 之间摆动), 静默 renew 不会触发 iface hotplug 事件,
@@ -890,6 +1008,18 @@ def ensure_iptv_routes() -> None:
         logger.warning("路由自检: 未能获取 %s 的 DHCP 网关, 跳过" % iface)
         return
 
+    if upstream_interface:
+        src = get_iface_ip(iface)
+        if src:
+            fixed = _ensure_policy_routes(nets, iface, gw, src)
+            if not fixed:
+                logger.info("路由自检: 策略路由已就绪 "
+                            "(table %s, rule from %s, 局域网不受影响)"
+                            % (_policy_route_table(), src))
+            return
+        logger.warning("路由自检: %s 无 IPv4 地址, 回退 main 表模式" % iface)
+
+    # ---- main 表模式 (未配置 upstream_interface 时的兜底) ----
     added = 0
     for net in nets:
         if _route_dev(net) == iface:
@@ -1532,6 +1662,14 @@ def sync_epg():
 # 主流程
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    # --fix-routes: 仅执行 EPG 网段路由自检 (供 hotplug 钩子/调试调用, 秒级返回)
+    if "--fix-routes" in sys.argv:
+        try:
+            ensure_iptv_routes()
+        except Exception as e:
+            logger.warning("路由自检异常: %s" % e)
+        raise SystemExit(0)
+
     # --discover-only: 仅执行嗅探发现并输出结果 JSON (供 LuCI "立即发现"按钮调用)
     if "--discover-only" in sys.argv:
         _t = sniff_timeout_cfg
