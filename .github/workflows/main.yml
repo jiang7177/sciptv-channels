@@ -117,6 +117,15 @@ jobs:
           	rm -f /tmp/luci-indexcache.*
           	rm -rf /tmp/luci-modulecache/
           	/etc/init.d/rpcd reload 2>/dev/null
+          	# 老配置升级: 补齐文件服务新选项 (conffile 保留不会自动合并默认值)
+          	uci -q get iptv-channels.main.server_enabled >/dev/null 2>&1 || uci set iptv-channels.main.server_enabled='1'
+          	uci -q get iptv-channels.main.server_port >/dev/null 2>&1 || uci set iptv-channels.main.server_port='5141'
+          	uci -q get iptv-channels.main.server_bind >/dev/null 2>&1 || uci set iptv-channels.main.server_bind='0.0.0.0'
+          	uci -q get iptv-channels.main.server_allow_cidr >/dev/null 2>&1 || uci set iptv-channels.main.server_allow_cidr=''
+          	uci commit iptv-channels
+          	# 免登录文件服务随安装自动启用并重启 (应用定时任务+文件服务)
+          	/etc/init.d/iptv-channels enable 2>/dev/null
+          	/etc/init.d/iptv-channels restart >/dev/null 2>&1
           	exit 0
           }
           PKEOF
@@ -177,6 +186,15 @@ jobs:
           rm -f /tmp/luci-indexcache.* 2>/dev/null
           rm -rf /tmp/luci-modulecache/ 2>/dev/null
           /etc/init.d/rpcd reload 2>/dev/null
+          # 老配置升级: 补齐文件服务新选项 (conffile 保留不会自动合并默认值)
+          uci -q get iptv-channels.main.server_enabled >/dev/null 2>&1 || uci set iptv-channels.main.server_enabled='1'
+          uci -q get iptv-channels.main.server_port >/dev/null 2>&1 || uci set iptv-channels.main.server_port='5141'
+          uci -q get iptv-channels.main.server_bind >/dev/null 2>&1 || uci set iptv-channels.main.server_bind='0.0.0.0'
+          uci -q get iptv-channels.main.server_allow_cidr >/dev/null 2>&1 || uci set iptv-channels.main.server_allow_cidr=''
+          uci commit iptv-channels
+          # 免登录文件服务随安装自动启用并重启 (应用定时任务+文件服务)
+          /etc/init.d/iptv-channels enable 2>/dev/null
+          /etc/init.d/iptv-channels restart >/dev/null 2>&1
           exit 0
           APKEOF
           chmod +x apk-postinst
