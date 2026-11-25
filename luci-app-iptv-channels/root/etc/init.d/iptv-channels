@@ -1,17 +1,20 @@
 #!/bin/sh /etc/rc.common
-# iptv-channels 服务: 不驻留进程, 主要负责目录准备与 crontab 定时任务管理
+# iptv-channels 服务 (procd 托管):
+#   1. 目录准备 (日志在 /tmp 内存盘, 输出在 /etc 持久化)
+#   2. crontab 定时任务管理
+#   3. 免登录文件服务 (file_server.py, 端口默认 5141)
 # 用法:
-#   /etc/init.d/iptv-channels start   # 准备目录并应用定时任务
+#   /etc/init.d/iptv-channels start|stop|restart
 #   /etc/init.d/iptv-channels cron    # 仅重新应用定时任务
 
+USE_PROCD=1
 START=99
-USE_PROCD=0
 
 SCRIPT="/usr/share/iptv-channels/iptv_channels.py"
+SERVER="/usr/share/iptv-channels/file_server.py"
 CRONTAB="/etc/crontabs/root"
 
 prepare_dirs() {
-	# 日志目录在 /tmp (内存盘, 不写 flash), 输出目录在 /etc (需持久化)
 	mkdir -p /tmp/iptv-channels/log /etc/iptv-channels/output
 }
 
@@ -36,25 +39,34 @@ setup_cron() {
 	fi
 }
 
-start() {
+start_service() {
 	prepare_dirs
 	setup_cron
+
+	local senabled
+	senabled="$(uci -q get iptv-channels.main.server_enabled)"
+	# 未配置(老配置升级)视为启用, 仅显式设为 0 才关闭
+	if [ "$senabled" = "0" ]; then
+		logger -t iptv-channels "免登录文件服务未启用 (server_enabled=0)"
+		return 0
+	fi
+
+	local port bind
+	port="$(uci -q get iptv-channels.main.server_port)"
+	port="${port:-5141}"
+	bind="$(uci -q get iptv-channels.main.server_bind)"
+	bind="${bind:-0.0.0.0}"
+
+	procd_open_instance
+	procd_set_param command python3 "$SERVER" --bind "$bind" --port "$port"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+	logger -t iptv-channels "免登录文件服务已启动: $bind:$port"
 }
 
-restart() {
-	start
-}
-
-stop() {
-	# 脚本为一次性任务, 无需停止常驻进程
-	return 0
-}
-
-boot() {
-	start
-}
-
+# 兼容旧用法: 仅重新应用定时任务 (v1.2.5 起重启服务同样会应用)
 cron() {
-	prepare_dirs
-	setup_cron
+	/etc/init.d/iptv-channels restart
 }

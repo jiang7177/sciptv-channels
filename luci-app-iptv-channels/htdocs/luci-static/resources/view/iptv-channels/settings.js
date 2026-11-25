@@ -253,6 +253,33 @@ return view.extend({
 		o = s.taboption('adv', form.Value, 'epg_git_token', _('Git 私有令牌'));
 		o.password = true;
 
+		/* ---- 免登录文件服务 ---- */
+		o = s.taboption('adv', form.Flag, 'server_enabled', _('免登录文件服务'),
+			_('开启后播放器无需登录 LuCI，直接用 http://路由器IP:5141/sctv.m3u 或 /sctv.txt '
+			+ '订阅频道列表，EPG 填 /epg.xml。仅提供输出目录白名单文件（防路径穿越），'
+			+ '修改端口/地址/来源网段后需点下方"应用设置"重启服务生效。'
+			+ '注意：OpenWrt 默认防火墙已阻断 WAN 侧入站，不会暴露到公网'));
+		o.default = '1';
+
+		o = s.taboption('adv', form.Value, 'server_port', _('文件服务端口'),
+			_('免登录文件服务监听端口'));
+		o.datatype = 'range(1,65535)';
+		o.default = '5141';
+		o.placeholder = '5141';
+		o.depends('server_enabled', '1');
+
+		o = s.taboption('adv', form.Value, 'server_bind', _('监听地址'),
+			_('默认 0.0.0.0 监听所有网口；也可只绑定某网口 IP（如 192.168.123.1）'));
+		o.datatype = 'ipaddr("auto")';
+		o.placeholder = '0.0.0.0';
+		o.depends('server_enabled', '1');
+
+		o = s.taboption('adv', form.Value, 'server_allow_cidr', _('来源网段白名单'),
+			_('仅允许指定网段访问文件服务（空格分隔多个，如 192.168.123.0/24 10.0.0.0/8）。'
+			+ '留空 = 所有来源可访问（含 WAN 侧，建议填写）'));
+		o.placeholder = '192.168.123.0/24';
+		o.depends('server_enabled', '1');
+
 		/* ---- 定时任务 tab ---- */
 		s.tab('cron', _('定时更新'));
 
@@ -337,7 +364,7 @@ return view.extend({
 			var btnCron = E('button', {
 				'class': 'btn cbi-button',
 				'click': ui.createHandlerFn(this, 'handleApplyCron', m)
-			}, _('应用定时任务'));
+			}, _('应用设置（定时任务/文件服务）'));
 
 			var buttons = E('div', { 'class': 'cbi-page-actions' }, [btnDiscover, btnRun, btnCron]);
 

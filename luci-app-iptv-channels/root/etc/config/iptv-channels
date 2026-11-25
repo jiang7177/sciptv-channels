@@ -34,7 +34,12 @@ config main 'main'
 
 	# EPG 网段路由 (空格分隔): 每次运行前自检, 缺失时自动经 IPTV 口网关补齐
 	# (DHCP 静默 renew 换地址池后 hotplug 钩子不会触发, 路由会丢失)
+	# v1.2.4 起写入独立路由表 + ip rule (仅路由器 IPTV 源流量生效),
+	# 局域网设备访问这些公网网段不受影响
 	option epg_routes '182.136.0.0/13 182.144.0.0/14 118.122.0.0/16'
+
+	# EPG 网段策略路由使用的路由表编号 (一般无需修改)
+	option epg_route_table '100'
 
 	# 8 位 3DES 加密 key (从机顶盒抓包获取; 留空时若填写了 authenticator 会尝试自动破解)
 	option key ''
@@ -73,6 +78,16 @@ config main 'main'
 	# 定时任务
 	option cron_enabled '0'
 	option cron_expr '0 5 * * *'
+
+	# 免登录文件服务: 无需 LuCI 登录即可获取输出文件
+	# http://路由器IP:5141/sctv.m3u 或 /sctv.txt, EPG: /epg.xml
+	# 安全: 仅输出目录白名单文件 (防路径穿越); server_allow_cidr 可限制
+	# 来源网段 (如 192.168.123.0/24, 空格分隔多个), 留空 = 所有来源可访问
+	# (OpenWrt 默认防火墙已阻断 WAN 侧入站, 默认配置不会暴露到公网)
+	option server_enabled '1'
+	option server_port '5141'
+	option server_bind '0.0.0.0'
+	option server_allow_cidr ''
 
 	# EPG Git 同步 (可选)
 	option epg_git_repo ''

@@ -179,7 +179,8 @@ case "$METHOD" in
 			unset J_V
 		fi
 		if [ "$action" = "apply" ]; then
-			/etc/init.d/iptv-channels cron >/dev/null 2>&1
+			# 重启服务 = 应用定时任务 + 应用文件服务端口/网段设置
+			/etc/init.d/iptv-channels restart >/dev/null 2>&1
 			echo '{ "success": true }'
 		else
 			echo '{ "success": false, "msg": "不支持的操作" }'

@@ -1,8 +1,10 @@
 #!/bin/sh
-# iptv-channels: IPTV 口 DHCP 租约变化时, 自动将电信 EPG 网段路由指向新网关
+# iptv-channels: IPTV 口 DHCP 租约变化时, 自检 EPG 网段策略路由
+# v1.2.4 起: EPG 网段路由写入独立路由表 (默认 table 100) 并用 ip rule
+# 限定仅路由器自身 IPTV 源流量生效 —— 不再修改 main 表, 局域网设备
+# 访问这些公网网段不受任何影响。
 # 原因: 电信 IPTV DHCP 地址池会变 (10.252.96.0/19 -> 10.58.96.0/20 ...),
-#       静态路由写死网关会失效; 且 EDS 认证服务器每次重定向到不同 EPG 节点,
-#       只能用网段路由
+#       静默 renew 不触发本钩子, 每次插件运行前也会自检, 此处双保险。
 
 [ "$INTERFACE" = "iptv" ] || exit 0
 [ "$ACTION" = "ifup" ] || exit 0
@@ -10,16 +12,5 @@
 # 等待 netifd 完成接口配置
 sleep 3
 
-GW="$(ubus call network.interface.iptv status 2>/dev/null | jsonfilter -e '@.inactive.route[*].nexthop' | head -n1)"
-[ -n "$GW" ] || GW="$(ubus call network.interface.iptv status 2>/dev/null | jsonfilter -e '@.route[*].nexthop' | head -n1)"
-[ -n "$GW" ] || exit 0
-
-DEV="$(uci -q get network.iptv.device || echo eth2.49)"
-rc=0
-# 四川电信 IPTV EPG/认证网段
-ip route replace 182.136.0.0/13 via "$GW" dev "$DEV" metric 30 || rc=1
-ip route replace 118.122.0.0/16 via "$GW" dev "$DEV" metric 30 || rc=1
-ip route replace 182.144.0.0/14 via "$GW" dev "$DEV" metric 30 || rc=1
-
-logger -t iptv-channels "EPG 网段路由已指向 IPTV 网关 $GW (dev $DEV, rc=$rc)"
-exit $rc
+python3 /usr/share/iptv-channels/iptv_channels.py --fix-routes
+exit 0
